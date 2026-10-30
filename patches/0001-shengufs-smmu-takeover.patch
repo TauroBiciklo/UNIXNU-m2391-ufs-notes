@@ -1,0 +1,65 @@
+diff --git a/SmmuTakeover.h b/SmmuTakeover.h
+index c30f5a9..27bb48b 100644
+--- a/SmmuTakeover.h
++++ b/SmmuTakeover.h
+@@ -4,6 +4,11 @@ struct UfsSmmuPlan {
+   unsigned slot = 0xffffffffU, bank = 0, pages = 0;
+   uint32_t smr = 0, s2cr = 0;
+   bool reuse = false;
++  // m2391: the firmware (UEFI UFSDxe) already mapped our stream to its own
++  // context bank. Keep its SMR (the stream id is already right) and repoint the
++  // S2CR at the bypass bank we reserved, as Linux does on this firmware
++  // (bypass_quirk); refusing instead loses every read.
++  bool takeover = false;
+   const char *error = nullptr;
+ };
+ // ARM IHI 0062D.c sections 1.6 and 3.7: VA64=0 still rejects inputs above
+@@ -56,10 +61,12 @@ static UfsSmmuPlan planUfsSmmuBank(uint16_t stream, uint64_t dma, uint64_t bytes
+     bool ourBank = ((s2cr >> 16) & 3) == 0 && (s2cr & 255) == p.bank;
+     if (match) {
+       ++matches;
+-      if (matches > 1 || mask || !ourBank) {
++      if (matches > 1 || mask) {
+         p.slot = i; p.smr = smr; p.s2cr = s2cr;
+         p.error = "conflicting UFS stream mapping"; return p;
+       }
++      p.slot = i; p.reuse = true;
++      if (!ourBank) { p.smr = smr; p.s2cr = s2cr; p.takeover = true; }
+       p.reuse = true; p.slot = i;
+     } else if (ourBank) {
+       p.slot = i; p.smr = smr; p.s2cr = s2cr;
+@@ -67,7 +74,7 @@ static UfsSmmuPlan planUfsSmmuBank(uint16_t stream, uint64_t dma, uint64_t bytes
+     }
+   }
+   uint32_t sctlr = read((p.pages + p.bank) * 4096);
+-  if ((sctlr & 1) || (p.reuse && (sctlr || read(0x1000 + 4 * p.bank) != 0x10000 ||
++  if ((sctlr & 1) || (p.reuse && !p.takeover && (sctlr || read(0x1000 + 4 * p.bank) != 0x10000 ||
+                                 (read(0x1800 + 4 * p.bank) & ~1U)))) {
+     p.error = "reserved context bank not bypass"; return p;
+   }
+@@ -107,17 +114,22 @@ static const char *configureUfsSmmu(const UfsSmmuPlan &p, uint16_t stream, Read
+ {
+   if (p.error) return p.error;
+   unsigned cb = (p.pages + p.bank) * 4096;
+-  if (!p.reuse) write(cb, 0);
++  // m2391: a takeover programs this bank itself, so treat it like a
++  // fresh allocation; only a plain reuse finds the bank already in bypass.
++  const bool program = !p.reuse || p.takeover;
++  if (program) write(cb, 0);
+   if (read(cb) != 0) return "SMMU bypass disable readback";
+   // Set VA64 before exposing a newly allocated stream. Repair an exclusive
+   // existing 32-bit bypass too; do not silently reuse the faulty state.
+   if (read(0x1800 + 4 * p.bank) != 1) write(0x1800 + 4 * p.bank, 1);
+-  if (!p.reuse) write(0x1000 + 4 * p.bank, 0x10000);
++  if (program) write(0x1000 + 4 * p.bank, 0x10000);
+   if (read(0x1800 + 4 * p.bank) != 1 || read(0x1000 + 4 * p.bank) != 0x10000 || read(cb) != 0)
+     return "SMMU VA64 bypass readback";
+-  if (!p.reuse) {
++  if (!p.reuse || p.takeover) {
+     write(0xc00 + 4 * p.slot, p.bank);
+     if (read(0xc00 + 4 * p.slot) != p.bank) return "SMMU stream context readback";
++  }
++  if (!p.reuse) {
+     write(0x800 + 4 * p.slot, 0x80000000U | stream);
+   }
+   if (read(0x800 + 4 * p.slot) != (0x80000000U | stream) ||

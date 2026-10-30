@@ -1,0 +1,27 @@
+diff --git a/scripts/xnu-panic-screen.c b/scripts/xnu-panic-screen.c
+index 188a2c8..b2d2813 100644
+--- a/scripts/xnu-panic-screen.c
++++ b/scripts/xnu-panic-screen.c
+@@ -255,19 +255,9 @@ __attribute__((noreturn, used, section(".text.b_main"))) void panic_screen_main
+   /* The return addresses up the frame pointer chain: the exception entry links the panic's frames to the code that faulted, so this
+    * names the callers the message leaves out. Stops at a pointer outside the kernel's range, a misaligned one or one that does not
+    * move up the stack. */
+-  {
+-    const u64 *fp = (const u64 *)__builtin_frame_address (0);
+-    text (&g, "\nframes");
+-    for (unsigned i = 0; i < 24; i++) {
+-      const u64 at = (u64)fp;
+-      if (at < 0xfffffff000000000UL || (at & 15)) break;
+-      const u64 next = fp[0], lr = fp[1] & 0x0000007fffffffffUL;   /* the return address without its pointer authentication bits */
+-      put (&g, ' ');
+-      number (&g, lr | 0xffffff8000000000UL, 16, 16, 1);
+-      if (next <= at) break;
+-      fp = (const u64 *)next;
+-    }
+-  }
++    /* m2391: the frame-pointer walk was removed to fit the panic screen into the
++     * kernel's padding cave (2639 > 2608 bytes). The panic message itself, which is
++     * what a driver failure needs, is unaffected. */
+   g.log = 0;
+   __asm__ volatile ("dsb sy");
+   /* Resolved from this candidate's symbols by the patcher, never fixed addresses.
